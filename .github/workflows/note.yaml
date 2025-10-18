@@ -29,17 +29,13 @@ on:
         required: true
         default: 'false'
         type: choice
-        options:
-          - 'true'
-          - 'false'
+        options: ['true','false']
       dry_run:
         description: '投稿をスキップ（生成のみ）'
         required: true
         default: 'false'
         type: choice
-        options:
-          - 'true'
-          - 'false'
+        options: ['true','false']
 
 permissions:
   contents: read
@@ -53,24 +49,23 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      THEME: ${{ github.event.inputs.theme }}
+      THEME:  ${{ github.event.inputs.theme }}
       TARGET: ${{ github.event.inputs.target }}
-      MESSAGE: ${{ github.event.inputs.message }}
-      CTA: ${{ github.event.inputs.cta }}
-      TAGS: ${{ github.event.inputs.tags }}
+      MESSAGE:${{ github.event.inputs.message }}
+      CTA:    ${{ github.event.inputs.cta }}
+      TAGS:   ${{ github.event.inputs.tags }}
     outputs:
-      title: ${{ steps.collect.outputs.title }}
-      article_b64: ${{ steps.collect.outputs.article_b64 }}
+      title:      ${{ steps.collect.outputs.title }}
+      article_b64:${{ steps.collect.outputs.article_b64 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+        with: { node-version: '20' }
 
-      - name: Install fetch
+      - name: Install deps (fetch)
         run: |
           npm init -y
           npm i node-fetch
@@ -82,11 +77,11 @@ jobs:
           import fs from "fs";
 
           const API_KEY = process.env.GEMINI_API_KEY;
-          const THEME = process.env.THEME || "";
-          const TARGET = process.env.TARGET || "";
-          const MESSAGE = process.env.MESSAGE || "";
-          const CTA = process.env.CTA || "";
-          const TAGS = process.env.TAGS || "";
+          const THEME  = process.env.THEME ?? "";
+          const TARGET = process.env.TARGET ?? "";
+          const MESSAGE= process.env.MESSAGE ?? "";
+          const CTA    = process.env.CTA ?? "";
+          const TAGS   = process.env.TAGS ?? "";
 
           const prompt = `
           あなたはnoteで人気記事を執筆するプロのライターです。
@@ -117,26 +112,22 @@ jobs:
 
           const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=${API_KEY}`;
 
-          const response = await fetch(url, {
+          const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              contents: [
-                { role: "user", parts: [{ text: prompt }] }
-              ]
+              contents: [{ role: "user", parts: [{ text: prompt }]}]
             })
           });
 
-          const data = await response.json();
-          const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "出力なし";
-          console.log("=== Gemini出力 ===\n", text);
-
+          const data = await res.json();
+          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "出力なし";
           const titleMatch = text.match(/^#\s*(.+)/);
           const title = titleMatch ? titleMatch[1] : "タイトル（自動生成）";
-          fs.writeFileSync(".note-article.md", text);
-          fs.writeFileSync(".note-title.txt", title);
 
-          console.log("記事タイトル:", title);
+          fs.writeFileSync(".note-article.md", text, "utf8");
+          fs.writeFileSync(".note-title.txt", title, "utf8");
+          console.log("=== 生成タイトル ===", title);
           EOF
 
           node gemini-note.mjs
@@ -146,12 +137,14 @@ jobs:
         run: |
           title=$(cat .note-title.txt)
           b64=$(base64 -w 0 .note-article.md 2>/dev/null || base64 .note-article.md)
-          echo "title<<EOF" >> $GITHUB_OUTPUT
-          echo "$title" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          echo "article_b64<<EOF" >> $GITHUB_OUTPUT
-          echo "$b64" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "title<<EOF"
+            echo "$title"
+            echo "EOF"
+            echo "article_b64<<EOF"
+            echo "$b64"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
   post:
     name: Post to note.com (Playwright)
@@ -159,19 +152,18 @@ jobs:
     if: ${{ github.event.inputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     env:
-      IS_PUBLIC: ${{ github.event.inputs.is_public }}
+      IS_PUBLIC:  ${{ github.event.inputs.is_public }}
       STATE_JSON: ${{ secrets.NOTE_STORAGE_STATE_JSON }}
-      START_URL: https://editor.note.com/new
+      START_URL:  https://editor.note.com/new
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+        with: { node-version: '20' }
 
-      - name: Install Playwright
+      - name: Install Playwright + marked
         run: |
           npm init -y
           npm i playwright marked
@@ -182,8 +174,8 @@ jobs:
         run: |
           test -n "$STATE_JSON" || (echo "ERROR: NOTE_STORAGE_STATE_JSON secret is not set" && exit 1)
           mkdir -p "$RUNNER_TEMP"
-          echo "$STATE_JSON" > "$RUNNER_TEMP/note-state.json"
-          echo "STATE_PATH=$RUNNER_TEMP/note-state.json" >> $GITHUB_OUTPUT
+          printf '%s' "$STATE_JSON" > "$RUNNER_TEMP/note-state.json"
+          echo "STATE_PATH=$RUNNER_TEMP/note-state.json" >> "$GITHUB_OUTPUT"
 
       - name: Restore article
         env:
@@ -192,53 +184,156 @@ jobs:
           mkdir -p .note-artifacts
           echo "$ARTICLE_B64" | base64 -d > .note-artifacts/article.md || echo "$ARTICLE_B64" | base64 --decode > .note-artifacts/article.md
 
-      - name: Publish via Playwright
+      - name: Publish via Playwright (robust)
+        env:
+          STATE_PATH: ${{ steps.state.outputs.STATE_PATH }}
         run: |
+          set -euo pipefail
           cat > post.mjs <<'EOF'
           import { chromium } from "playwright";
           import { marked } from "marked";
           import fs from "fs";
 
           const STATE_PATH = process.env.STATE_PATH;
-          const IS_PUBLIC = String(process.env.IS_PUBLIC || "false") === "true";
-          const START_URL = process.env.START_URL || "https://editor.note.com/new";
-          const md = fs.readFileSync(".note-artifacts/article.md", "utf8");
-          const html = marked.parse(md);
+          const IS_PUBLIC  = String(process.env.IS_PUBLIC || "false") === "true";
+          const START_URL  = process.env.START_URL || "https://editor.note.com/new";
+          const md         = fs.readFileSync(".note-artifacts/article.md", "utf8");
+          const html       = marked.parse(md);
 
           const titleMatch = md.match(/^#\s*(.+)/);
-          const title = titleMatch ? titleMatch[1] : "タイトル（自動生成）";
+          const title      = titleMatch ? titleMatch[1] : "タイトル（自動生成）";
 
-          const browser = await chromium.launch({ headless: true });
-          const context = await browser.newContext({ storageState: STATE_PATH });
+          // ---- Cookie ドメイン補完（.note.com / note.com / .editor.note.com）----
+          let storage = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+          const domains = new Set([".note.com", "note.com", ".editor.note.com", "editor.note.com"]);
+          if (Array.isArray(storage.cookies)) {
+            const extra = [];
+            for (const c of storage.cookies) {
+              // note系以外は無視
+              if (!String(c.domain).includes("note.com")) continue;
+              for (const d of domains) {
+                if (c.domain === d) continue;
+                extra.push({ ...c, domain: d });
+              }
+            }
+            storage.cookies.push(...extra);
+            fs.writeFileSync(STATE_PATH, JSON.stringify(storage, null, 2));
+          }
+
+          // ---- Chromium 起動（安定化オプション）----
+          const browser = await chromium.launch({
+            headless: true,
+            args: [
+              "--disable-dev-shm-usage",
+              "--no-sandbox",
+              "--disable-gpu",
+              "--lang=ja-JP"
+            ]
+          });
+
+          const context = await browser.newContext({
+            storageState: STATE_PATH,
+            locale: "ja-JP",
+            userAgent:
+              "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            viewport: { width: 1280, height: 900 }
+          });
+
           const page = await context.newPage();
 
-          await page.goto(START_URL, { waitUntil: "domcontentloaded" });
-          await page.waitForSelector('textarea[placeholder*="タイトル"]');
-          await page.fill('textarea[placeholder*="タイトル"]', title);
+          // ---- ナビゲーション（ログイン検知＋再適用）----
+          await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
 
-          const bodyBox = page.locator('div[contenteditable="true"][role="textbox"]').first();
-          await bodyBox.waitFor({ state: "visible" });
-          await bodyBox.click();
-          await page.keyboard.type(md.slice(0, 5000)); // 文字制限対策で部分入力
+          const onLogin = page.url().includes("/login");
+          if (onLogin) {
+            console.log("⚠️ ログインページに遷移。cookieを明示適用して再読込します。");
+            await context.clearCookies();
+            await context.addCookies(storage.cookies);
+            await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+          }
 
+          // ---- タイトル入力（複数セレクタ冗長化）----
+          const titleSelectors = [
+            'textarea[placeholder*="タイトル"]',
+            'textarea[aria-label="記事タイトル"]',
+            'textarea'
+          ];
+          let filledTitle = false;
+          for (const sel of titleSelectors) {
+            try {
+              await page.waitForSelector(sel, { timeout: 60000 });
+              await page.fill(sel, title);
+              filledTitle = true;
+              break;
+            } catch (_) {}
+          }
+          if (!filledTitle) {
+            await page.screenshot({ path: ".note-artifacts/error_no_title.png", fullPage: true });
+            throw new Error("タイトル入力欄が見つかりませんでした");
+          }
+
+          // ---- 本文入力（エディタroot検出 → paste）----
+          const bodySelectors = [
+            'div[contenteditable="true"][role="textbox"]',
+            'div[contenteditable="true"]'
+          ];
+          let bodyFound = false;
+          for (const sel of bodySelectors) {
+            try {
+              const box = page.locator(sel).first();
+              await box.waitFor({ state: "visible", timeout: 60000 });
+              await box.click();
+              await page.keyboard.type(md.slice(0, 5000));
+              bodyFound = true;
+              break;
+            } catch (_) {}
+          }
+          if (!bodyFound) {
+            await page.screenshot({ path: ".note-artifacts/error_no_body.png", fullPage: true });
+            throw new Error("本文エディタが見つかりませんでした");
+          }
+
+          // ---- 下書き / 公開 ----
           if (!IS_PUBLIC) {
-            const saveBtn = page.locator('button:has-text("下書き保存")').first();
-            await saveBtn.waitFor({ state: "visible" });
-            if (await saveBtn.isEnabled()) await saveBtn.click();
-            console.log("✅ 下書き保存完了");
+            try {
+              const saveBtn = page.locator('button:has-text("下書き保存")').first();
+              await saveBtn.waitFor({ state: "visible", timeout: 60000 });
+              if (await saveBtn.isEnabled()) await saveBtn.click();
+              console.log("✅ 下書き保存完了");
+            } catch (e) {
+              await page.screenshot({ path: ".note-artifacts/error_draft.png", fullPage: true });
+              throw e;
+            }
             await browser.close();
             process.exit(0);
           }
 
-          const proceed = page.locator('button:has-text("公開に進む")').first();
-          await proceed.waitFor({ state: "visible" });
-          await proceed.click();
+          try {
+            const proceed = page.locator('button:has-text("公開に進む")').first();
+            await proceed.waitFor({ state: "visible", timeout: 60000 });
+            await proceed.click();
 
-          const publishBtn = page.locator('button:has-text("投稿する")').first();
-          await publishBtn.waitFor({ state: "visible" });
-          await publishBtn.click();
+            const publishBtn = page.locator('button:has-text("投稿する")').first();
+            await publishBtn.waitFor({ state: "visible", timeout: 60000 });
+            await publishBtn.click();
+            console.log("✅ 公開投稿完了");
+          } catch (e) {
+            await page.screenshot({ path: ".note-artifacts/error_publish.png", fullPage: true });
+            throw e;
+          }
 
-          console.log("✅ 公開投稿完了");
           await browser.close();
           EOF
+
           node post.mjs
+
+      - name: Upload debug artifacts (screenshots & article)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: note-debug-artifacts
+          path: |
+            .note-artifacts/**
+            .note-article.md
+            .note-title.txt
+          if-no-files-found: ignore
