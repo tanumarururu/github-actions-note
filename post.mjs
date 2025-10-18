@@ -11,7 +11,7 @@ const html = marked.parse(md);
 const titleMatch = md.match(/^#\s*(.+)/);
 const title = titleMatch ? titleMatch[1] : "タイトル（自動生成）";
 
-// --- セッション修正処理（note.com → editor.note.com にも適用） ---
+// --- セッション修正処理 ---
 let storage = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
 if (storage.cookies) {
   const editorCookies = storage.cookies
@@ -27,7 +27,7 @@ const page = await context.newPage();
 
 await page.goto(START_URL, { waitUntil: "domcontentloaded" });
 
-// --- ログイン検知＆再遷移 ---
+// --- ログイン検知 ---
 if (page.url().includes("login")) {
   console.log("⚠️ ログインページにリダイレクトされました。セッション適用再試行中…");
   await page.context().clearCookies();
