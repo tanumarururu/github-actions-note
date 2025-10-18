@@ -1,59 +1,64 @@
 import { chromium } from "playwright";
+import { marked } from "marked";
 import fs from "fs";
-import path from "path";
 
-// 環境変数読み込み
-const STATE_JSON = process.env.NOTE_STORAGE_STATE_JSON;
-const IS_PUBLIC = process.env.IS_PUBLIC === "true";
-const START_URL = "https://note.com/new";
+const STATE_PATH = process.env.STATE_PATH;
+const IS_PUBLIC = String(process.env.IS_PUBLIC || "false") === "true";
+const START_URL = process.env.START_URL || "https://editor.note.com/new";
+const md = fs.readFileSync(".note-artifacts/article.md", "utf8");
+const html = marked.parse(md);
 
-const mdPath = path.resolve("article.md");
-const markdown = fs.readFileSync(mdPath, "utf8");
+const titleMatch = md.match(/^#\s*(.+)/);
+const title = titleMatch ? titleMatch[1] : "タイトル（自動生成）";
 
-(async () => {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({
-    storageState: JSON.parse(STATE_JSON),
-  });
-  const page = await context.newPage();
+// --- セッション修正処理（note.com → editor.note.com にも適用） ---
+let storage = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+if (storage.cookies) {
+  const editorCookies = storage.cookies
+    .filter(c => c.domain.includes("note.com"))
+    .map(c => ({ ...c, domain: ".editor.note.com" }));
+  storage.cookies.push(...editorCookies);
+  fs.writeFileSync(STATE_PATH, JSON.stringify(storage, null, 2));
+}
 
-  console.log("🌐 note.com にアクセス中...");
-  await page.goto(START_URL, { waitUntil: "networkidle" });
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({ storageState: STATE_PATH });
+const page = await context.newPage();
 
-  // ====== 修正版セレクタ部分 ======
-  // タイトル入力欄を探す（新UIでは input[placeholder] に変更）
-  const titleInput = page.locator('input[placeholder*="タイトル"], textarea[placeholder*="タイトル"]');
-  await titleInput.waitFor({ timeout: 60000 });
-  console.log("✅ タイトル欄を検出しました");
+await page.goto(START_URL, { waitUntil: "domcontentloaded" });
 
-  // 本文入力欄を探す（新UIでは contenteditable の div に変更）
-  const bodyBox = page.locator('div[contenteditable="true"]');
-  await bodyBox.waitFor({ timeout: 60000 });
-  console.log("✅ 本文エディタを検出しました");
+// --- ログイン検知＆再遷移 ---
+if (page.url().includes("login")) {
+  console.log("⚠️ ログインページにリダイレクトされました。セッション適用再試行中…");
+  await page.context().clearCookies();
+  await context.addCookies(storage.cookies);
+  await page.goto(START_URL, { waitUntil: "domcontentloaded" });
+}
 
-  // タイトル入力
-  const titleLine = markdown.split("\n")[0].replace(/^#\s*/, "").slice(0, 60);
-  await titleInput.fill(titleLine);
-  console.log(`📝 タイトル入力完了: ${titleLine}`);
+await page.waitForSelector('textarea[placeholder*="タイトル"]', { timeout: 60000 });
+await page.fill('textarea[placeholder*="タイトル"]', title);
 
-  // 本文入力
-  await bodyBox.click();
-  await bodyBox.type(markdown);
-  console.log("📄 本文入力完了");
+const bodyBox = page.locator('div[contenteditable="true"][role="textbox"]').first();
+await bodyBox.waitFor({ state: "visible" });
+await bodyBox.click();
+await page.keyboard.type(md.slice(0, 5000));
 
-  // 下書き保存 or 公開
-  if (!IS_PUBLIC) {
-    const saveBtn = page.locator('button:has-text("保存"), button:has-text("下書き")');
-    await saveBtn.waitFor({ timeout: 20000 });
-    await saveBtn.click();
-    console.log("💾 下書き保存完了");
-  } else {
-    const publishBtn = page.locator('button:has-text("公開")');
-    await publishBtn.waitFor({ timeout: 20000 });
-    await publishBtn.click();
-    console.log("🚀 記事を公開しました");
-  }
-
+if (!IS_PUBLIC) {
+  const saveBtn = page.locator('button:has-text("下書き保存")').first();
+  await saveBtn.waitFor({ state: "visible" });
+  if (await saveBtn.isEnabled()) await saveBtn.click();
+  console.log("✅ 下書き保存完了");
   await browser.close();
-  console.log("🎉 note投稿処理が完了しました");
-})();
+  process.exit(0);
+}
+
+const proceed = page.locator('button:has-text("公開に進む")').first();
+await proceed.waitFor({ state: "visible" });
+await proceed.click();
+
+const publishBtn = page.locator('button:has-text("投稿する")').first();
+await publishBtn.waitFor({ state: "visible" });
+await publishBtn.click();
+
+console.log("✅ 公開投稿完了");
+await browser.close();
