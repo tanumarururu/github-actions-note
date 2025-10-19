@@ -242,8 +242,12 @@ jobs:
             await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
           }
 
+          // --- UI安定化待ち ---
+          await page.waitForTimeout(3000);
+
           // --- タイトル入力 ---
           const titleSelectors = [
+            'div[data-testid="editor-title-input"]',
             'div[contenteditable="true"][data-placeholder*="タイトル"]',
             'div[role="textbox"][contenteditable="true"]',
             'textarea[placeholder*="タイトル"]'
@@ -270,8 +274,19 @@ jobs:
           console.log("✅ タイトル入力完了:", title);
 
           // --- 本文入力 ---
-          const bodySel = 'div[contenteditable="true"]:not([data-placeholder*="タイトル"])';
-          const bodyBox = await page.$(bodySel);
+          const bodySelectors = [
+            'div[data-testid="editor-body-input"]',
+            'div[contenteditable="true"]:not([data-placeholder*="タイトル"])'
+          ];
+          let bodyBox = null;
+          for (const sel of bodySelectors) {
+            const box = await page.$(sel);
+            if (box) {
+              bodyBox = box;
+              break;
+            }
+          }
+
           if (!bodyBox) {
             console.error("❌ 本文欄が見つかりません");
             await page.screenshot({ path: ".note-artifacts/error_body.png", fullPage: true });
@@ -291,16 +306,16 @@ jobs:
                 await saveBtn.click();
                 console.log("✅ 下書き保存完了");
               } else {
-                console.log("⚠️ 下書きボタン未検出（自動保存モード？）");
+                console.log("⚠️ 自動保存モード検出");
               }
             } catch {
-              console.log("⚠️ 自動保存検出");
+              console.log("⚠️ 自動保存モード検出");
             }
             await browser.close();
             process.exit(0);
           }
 
-          // --- 公開投稿 ---
+          // --- 公開 ---
           try {
             const proceed = page.locator('button:has-text("公開に進む")').first();
             await proceed.waitFor({ state: "visible", timeout: 60000 });
