@@ -51,19 +51,21 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       THEME:  ${{ github.event.inputs.theme }}
       TARGET: ${{ github.event.inputs.target }}
-      MESSAGE:${{ github.event.inputs.message }}
+      MESSAGE: ${{ github.event.inputs.message }}
       CTA:    ${{ github.event.inputs.cta }}
       TAGS:   ${{ github.event.inputs.tags }}
     outputs:
       title:      ${{ steps.collect.outputs.title }}
-      article_b64:${{ steps.collect.outputs.article_b64 }}
+      article_b64: ${{ steps.collect.outputs.article_b64 }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with:
+          node-version: '20'
 
       - name: Install deps (fetch)
         run: |
@@ -79,7 +81,7 @@ jobs:
           const API_KEY = process.env.GEMINI_API_KEY;
           const THEME  = process.env.THEME ?? "";
           const TARGET = process.env.TARGET ?? "";
-          const MESSAGE= process.env.MESSAGE ?? "";
+          const MESSAGE = process.env.MESSAGE ?? "";
           const CTA    = process.env.CTA ?? "";
           const TAGS   = process.env.TAGS ?? "";
 
@@ -155,13 +157,15 @@ jobs:
       IS_PUBLIC:  ${{ github.event.inputs.is_public }}
       STATE_JSON: ${{ secrets.NOTE_STORAGE_STATE_JSON }}
       START_URL:  https://editor.note.com/new
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with:
+          node-version: '20'
 
       - name: Install Playwright + marked
         run: |
@@ -203,13 +207,12 @@ jobs:
           const titleMatch = md.match(/^#\s*(.+)/);
           const title      = titleMatch ? titleMatch[1] : "タイトル（自動生成）";
 
-          // ---- Cookie ドメイン補完（.note.com / note.com / .editor.note.com）----
+          // ---- Cookie ドメイン補完 ----
           let storage = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
           const domains = new Set([".note.com", "note.com", ".editor.note.com", "editor.note.com"]);
           if (Array.isArray(storage.cookies)) {
             const extra = [];
             for (const c of storage.cookies) {
-              // note系以外は無視
               if (!String(c.domain).includes("note.com")) continue;
               for (const d of domains) {
                 if (c.domain === d) continue;
@@ -220,7 +223,7 @@ jobs:
             fs.writeFileSync(STATE_PATH, JSON.stringify(storage, null, 2));
           }
 
-          // ---- Chromium 起動（安定化オプション）----
+          // ---- Chromium 起動 ----
           const browser = await chromium.launch({
             headless: true,
             args: [
@@ -234,25 +237,22 @@ jobs:
           const context = await browser.newContext({
             storageState: STATE_PATH,
             locale: "ja-JP",
-            userAgent:
-              "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
             viewport: { width: 1280, height: 900 }
           });
 
           const page = await context.newPage();
 
-          // ---- ナビゲーション（ログイン検知＋再適用）----
+          // ---- ログイン確認 ----
           await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
-
-          const onLogin = page.url().includes("/login");
-          if (onLogin) {
-            console.log("⚠️ ログインページに遷移。cookieを明示適用して再読込します。");
+          if (page.url().includes("/login")) {
+            console.log("⚠️ ログインページに遷移。cookie再適用中...");
             await context.clearCookies();
             await context.addCookies(storage.cookies);
             await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
           }
 
-          // ---- タイトル入力（複数セレクタ冗長化）----
+          // ---- タイトル入力 ----
           const titleSelectors = [
             'textarea[placeholder*="タイトル"]',
             'textarea[aria-label="記事タイトル"]',
@@ -272,7 +272,7 @@ jobs:
             throw new Error("タイトル入力欄が見つかりませんでした");
           }
 
-          // ---- 本文入力（エディタroot検出 → paste）----
+          // ---- 本文入力 ----
           const bodySelectors = [
             'div[contenteditable="true"][role="textbox"]',
             'div[contenteditable="true"]'
@@ -293,7 +293,7 @@ jobs:
             throw new Error("本文エディタが見つかりませんでした");
           }
 
-          // ---- 下書き / 公開 ----
+          // ---- 下書き or 公開 ----
           if (!IS_PUBLIC) {
             try {
               const saveBtn = page.locator('button:has-text("下書き保存")').first();
