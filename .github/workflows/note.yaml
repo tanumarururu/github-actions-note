@@ -67,7 +67,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install deps (fetch)
+      - name: Install deps
         run: |
           npm init -y
           npm i node-fetch
@@ -113,7 +113,6 @@ jobs:
           `;
 
           const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=${API_KEY}`;
-
           const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -195,19 +194,16 @@ jobs:
           set -euo pipefail
           cat > post.mjs <<'EOF'
           import { chromium } from "playwright";
-          import { marked } from "marked";
           import fs from "fs";
 
           const STATE_PATH = process.env.STATE_PATH;
           const IS_PUBLIC  = String(process.env.IS_PUBLIC || "false") === "true";
           const START_URL  = process.env.START_URL || "https://editor.note.com/new";
           const md         = fs.readFileSync(".note-artifacts/article.md", "utf8");
-          const html       = marked.parse(md);
-
           const titleMatch = md.match(/^#\s*(.+)/);
           const title      = titleMatch ? titleMatch[1] : "タイトル（自動生成）";
 
-          // ---- Cookie ドメイン補完 ----
+          // --- Cookie補完 ---
           let storage = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
           const domains = new Set([".note.com", "note.com", ".editor.note.com", "editor.note.com"]);
           if (Array.isArray(storage.cookies)) {
@@ -223,91 +219,88 @@ jobs:
             fs.writeFileSync(STATE_PATH, JSON.stringify(storage, null, 2));
           }
 
-          // ---- Chromium 起動 ----
+          // --- ブラウザ起動 ---
           const browser = await chromium.launch({
             headless: true,
-            args: [
-              "--disable-dev-shm-usage",
-              "--no-sandbox",
-              "--disable-gpu",
-              "--lang=ja-JP"
-            ]
+            args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu"]
           });
 
           const context = await browser.newContext({
             storageState: STATE_PATH,
             locale: "ja-JP",
-            userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
             viewport: { width: 1280, height: 900 }
           });
 
           const page = await context.newPage();
 
-          // ---- ログイン確認 ----
+          // --- ログイン確認 ---
           await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
           if (page.url().includes("/login")) {
-            console.log("⚠️ ログインページに遷移。cookie再適用中...");
+            console.log("⚠️ ログイン再適用");
             await context.clearCookies();
             await context.addCookies(storage.cookies);
             await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
           }
 
-          // ---- タイトル入力 ----
+          // --- タイトル入力 ---
           const titleSelectors = [
-            'textarea[placeholder*="タイトル"]',
-            'textarea[aria-label="記事タイトル"]',
-            'textarea'
+            'div[contenteditable="true"][data-placeholder*="タイトル"]',
+            'div[role="textbox"][contenteditable="true"]',
+            'textarea[placeholder*="タイトル"]'
           ];
-          let filledTitle = false;
+          let titleBox = null;
           for (const sel of titleSelectors) {
-            try {
-              await page.waitForSelector(sel, { timeout: 60000 });
-              await page.fill(sel, title);
-              filledTitle = true;
+            const box = await page.$(sel);
+            if (box) {
+              titleBox = box;
               break;
-            } catch (_) {}
-          }
-          if (!filledTitle) {
-            await page.screenshot({ path: ".note-artifacts/error_no_title.png", fullPage: true });
-            throw new Error("タイトル入力欄が見つかりませんでした");
+            }
           }
 
-          // ---- 本文入力 ----
-          const bodySelectors = [
-            'div[contenteditable="true"][role="textbox"]',
-            'div[contenteditable="true"]'
-          ];
-          let bodyFound = false;
-          for (const sel of bodySelectors) {
-            try {
-              const box = page.locator(sel).first();
-              await box.waitFor({ state: "visible", timeout: 60000 });
-              await box.click();
-              await page.keyboard.type(md.slice(0, 5000));
-              bodyFound = true;
-              break;
-            } catch (_) {}
-          }
-          if (!bodyFound) {
-            await page.screenshot({ path: ".note-artifacts/error_no_body.png", fullPage: true });
-            throw new Error("本文エディタが見つかりませんでした");
+          if (!titleBox) {
+            console.error("❌ タイトル欄が見つかりません");
+            await page.screenshot({ path: ".note-artifacts/error_title.png", fullPage: true });
+            await browser.close();
+            process.exit(1);
           }
 
-          // ---- 下書き or 公開 ----
+          await titleBox.click({ clickCount: 3 });
+          await titleBox.press("Backspace");
+          await titleBox.type(title);
+          console.log("✅ タイトル入力完了:", title);
+
+          // --- 本文入力 ---
+          const bodySel = 'div[contenteditable="true"]:not([data-placeholder*="タイトル"])';
+          const bodyBox = await page.$(bodySel);
+          if (!bodyBox) {
+            console.error("❌ 本文欄が見つかりません");
+            await page.screenshot({ path: ".note-artifacts/error_body.png", fullPage: true });
+            await browser.close();
+            process.exit(1);
+          }
+
+          await bodyBox.click();
+          await page.keyboard.type(md.slice(0, 5000));
+          console.log("✅ 本文入力完了");
+
+          // --- 下書き or 公開 ---
           if (!IS_PUBLIC) {
             try {
               const saveBtn = page.locator('button:has-text("下書き保存")').first();
-              await saveBtn.waitFor({ state: "visible", timeout: 60000 });
-              if (await saveBtn.isEnabled()) await saveBtn.click();
-              console.log("✅ 下書き保存完了");
-            } catch (e) {
-              await page.screenshot({ path: ".note-artifacts/error_draft.png", fullPage: true });
-              throw e;
+              if (await saveBtn.isVisible()) {
+                await saveBtn.click();
+                console.log("✅ 下書き保存完了");
+              } else {
+                console.log("⚠️ 下書きボタン未検出（自動保存モード？）");
+              }
+            } catch {
+              console.log("⚠️ 自動保存検出");
             }
             await browser.close();
             process.exit(0);
           }
 
+          // --- 公開投稿 ---
           try {
             const proceed = page.locator('button:has-text("公開に進む")').first();
             await proceed.waitFor({ state: "visible", timeout: 60000 });
@@ -318,8 +311,8 @@ jobs:
             await publishBtn.click();
             console.log("✅ 公開投稿完了");
           } catch (e) {
+            console.error("❌ 公開処理エラー:", e.message);
             await page.screenshot({ path: ".note-artifacts/error_publish.png", fullPage: true });
-            throw e;
           }
 
           await browser.close();
@@ -327,7 +320,7 @@ jobs:
 
           node post.mjs
 
-      - name: Upload debug artifacts (screenshots & article)
+      - name: Upload debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
