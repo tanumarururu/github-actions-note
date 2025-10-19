@@ -1,3 +1,4 @@
+cat > post.mjs <<'EOF'
 import { chromium } from "playwright";
 import fs from "fs";
 
@@ -10,8 +11,8 @@ const title      = titleMatch ? titleMatch[1] : "タイトル（自動生成）"
 
 // --- Cookie補完 ---
 let storage = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+const domains = [".note.com", "note.com", ".editor.note.com", "editor.note.com"];
 if (Array.isArray(storage.cookies)) {
-  const domains = [".note.com", "note.com", ".editor.note.com", "editor.note.com"];
   const extra = [];
   for (const c of storage.cookies) {
     if (!String(c.domain).includes("note.com")) continue;
@@ -24,6 +25,7 @@ if (Array.isArray(storage.cookies)) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(storage, null, 2));
 }
 
+// --- Playwright起動 ---
 const browser = await chromium.launch({
   headless: true,
   args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu"]
@@ -36,33 +38,36 @@ const context = await browser.newContext({
 });
 
 const page = await context.newPage();
-
-console.log("🚀 noteエディタを開きます...");
-await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+console.log("🚀 noteエディタを開いています...");
+await page.goto(START_URL, { waitUntil: "networkidle", timeout: 120000 });
 
 // --- ログイン確認 ---
 if (page.url().includes("/login")) {
-  console.log("⚠️ ログイン再適用");
+  console.log("⚠️ ログイン再適用中...");
   await context.clearCookies();
   await context.addCookies(storage.cookies);
-  await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+  await page.goto(START_URL, { waitUntil: "networkidle", timeout: 120000 });
 }
 
-await page.waitForTimeout(3000);
+// --- ページ安定化 ---
+await page.waitForTimeout(5000);
 
-// --- タイトル入力欄を検索 ---
+// --- タイトル欄検出ロジック（最新版UI対応） ---
 const titleSelectors = [
-  'div[contenteditable="true"][data-placeholder*="タイトル"]',
-  'div[role="textbox"][contenteditable="true"]',
   'textarea[placeholder*="タイトル"]',
-  'div[contenteditable="true"] h1',
-  'h1[contenteditable="true"]'
+  'input[placeholder*="タイトル"]',
+  'div[contenteditable="true"][data-placeholder*="タイトル"]',
+  'div[contenteditable="true"][role="textbox"]',
+  'h1[contenteditable="true"]',
+  'div[data-testid*="title"]',
+  '[data-slate-node="element"] h1',
+  'div[role="textbox"]:not([aria-label*="本文"])'
 ];
 
 let titleBox = null;
 for (const sel of titleSelectors) {
   try {
-    const box = await page.$(sel);
+    const box = await page.waitForSelector(sel, { timeout: 8000 });
     if (box) {
       titleBox = box;
       console.log(`✅ タイトル欄検出: ${sel}`);
@@ -72,26 +77,31 @@ for (const sel of titleSelectors) {
 }
 
 if (!titleBox) {
+  console.error("❌ タイトル欄が見つかりません（UI変更の可能性）");
   await page.screenshot({ path: ".note-artifacts/error_title.png", fullPage: true });
-  throw new Error("❌ タイトル欄が見つかりません。UI変更の可能性あり。");
+  await browser.close();
+  process.exit(1);
 }
 
+// --- タイトル入力 ---
 await titleBox.click({ clickCount: 3 });
 await page.keyboard.press("Backspace");
-await titleBox.type(title);
+await titleBox.type(title, { delay: 30 });
 console.log("✅ タイトル入力完了:", title);
 
-// --- 本文入力欄 ---
+// --- 本文欄検出 ---
 const bodySelectors = [
   'div[contenteditable="true"]:not([data-placeholder*="タイトル"])',
+  'div[role="textbox"][data-placeholder*="本文"]',
   'article div[contenteditable="true"]',
-  'div[data-testid*="editor"] div[contenteditable="true"]'
+  'div[data-testid*="editor-body-input"]',
+  'div[data-testid*="rich-text"]'
 ];
 
 let bodyBox = null;
 for (const sel of bodySelectors) {
   try {
-    const box = await page.$(sel);
+    const box = await page.waitForSelector(sel, { timeout: 8000 });
     if (box) {
       bodyBox = box;
       console.log(`✅ 本文欄検出: ${sel}`);
@@ -101,16 +111,20 @@ for (const sel of bodySelectors) {
 }
 
 if (!bodyBox) {
+  console.error("❌ 本文欄が見つかりません（UI変更の可能性）");
   await page.screenshot({ path: ".note-artifacts/error_body.png", fullPage: true });
-  throw new Error("❌ 本文欄が見つかりません。");
+  await browser.close();
+  process.exit(1);
 }
 
+// --- 本文入力 ---
 await bodyBox.click();
-await page.keyboard.type(md.slice(0, 5000));
+await page.keyboard.type(md.slice(0, 8000), { delay: 10 });
 console.log("✅ 本文入力完了");
 
-// --- 下書き or 公開 ---
+// --- 保存または公開 ---
 if (!IS_PUBLIC) {
+  console.log("💾 下書き保存モード");
   try {
     const saveBtn = page.locator('button:has-text("下書き保存")').first();
     if (await saveBtn.isVisible()) {
@@ -126,8 +140,9 @@ if (!IS_PUBLIC) {
   process.exit(0);
 }
 
-// --- 公開 ---
+// --- 公開処理 ---
 try {
+  console.log("🚀 公開ボタン探索中...");
   const proceed = page.locator('button:has-text("公開に進む")').first();
   await proceed.waitFor({ state: "visible", timeout: 60000 });
   await proceed.click();
@@ -135,10 +150,12 @@ try {
   const publishBtn = page.locator('button:has-text("投稿する")').first();
   await publishBtn.waitFor({ state: "visible", timeout: 60000 });
   await publishBtn.click();
+
   console.log("✅ 公開投稿完了");
 } catch (e) {
+  console.error("❌ 公開処理エラー:", e.message);
   await page.screenshot({ path: ".note-artifacts/error_publish.png", fullPage: true });
-  throw e;
 }
 
 await browser.close();
+EOF
