@@ -24,18 +24,10 @@ if (Array.isArray(storage.cookies)) {
 }
 
 // --- Browser起動 ---
-const browser = await chromium.launch({
-  headless: true,
-  args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu"],
-});
-const context = await browser.newContext({
-  storageState: STATE_PATH,
-  viewport: { width: 1280, height: 900 },
-  locale: "ja-JP",
-});
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({ storageState: STATE_PATH });
 const page = await context.newPage();
 
-// --- エディタページへ ---
 await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
 
 // --- ログイン確認 ---
@@ -46,15 +38,23 @@ if (page.url().includes("/login")) {
   await page.goto(START_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
 }
 
-// --- タイトル入力欄（contenteditable対応） ---
+// --- タイトル欄（旧UI / 新UI どちらも対応） ---
 let titleBox = null;
 try {
   await page.waitForTimeout(3000);
-  titleBox = await page.$('div[contenteditable="true"]:first-child');
-  if (!titleBox)
-    titleBox = await page.$('div[role="textbox"][contenteditable="true"]');
-  if (!titleBox)
-    throw new Error("タイトル欄が見つかりませんでした");
+  // 旧UI
+  titleBox = await page.$('textarea[placeholder*="タイトル"]');
+  // 新UI
+  if (!titleBox) {
+    titleBox = await page.$('div[contenteditable="true"][data-placeholder*="タイトル"]');
+  }
+  // fallback
+  if (!titleBox) {
+    const editors = await page.$$(`div[contenteditable="true"]`);
+    titleBox = editors[0];
+  }
+
+  if (!titleBox) throw new Error("タイトル欄が見つかりませんでした");
   await titleBox.click({ clickCount: 3 });
   await titleBox.press("Backspace");
   await titleBox.type(title);
@@ -66,10 +66,17 @@ try {
   process.exit(1);
 }
 
-// --- 本文入力（1つ目のcontenteditableを除外して次） ---
+// --- 本文欄 ---
 try {
-  const bodyBoxes = await page.$$(`div[contenteditable="true"]`);
-  const bodyBox = bodyBoxes[1] || bodyBoxes[0];
+  let bodyBox = null;
+  const boxes = await page.$$(`div[contenteditable="true"]`);
+  if (boxes.length > 1) {
+    bodyBox = boxes[1];
+  } else {
+    // Fallback: role=articleなどを含むもの
+    bodyBox = await page.$('div[role="textbox"], div[aria-label*="本文"]');
+  }
+
   if (!bodyBox) throw new Error("本文欄が見つかりませんでした");
   await bodyBox.click();
   await page.keyboard.type(md.slice(0, 5000));
@@ -81,22 +88,21 @@ try {
   process.exit(1);
 }
 
-// --- 下書きまたは公開 ---
+// --- 下書き or 公開 ---
 try {
   if (!IS_PUBLIC) {
-    // 新UIは「保存しました」系メッセージで検知
+    console.log("✅ 自動下書き保存モード（新UI対応）");
     await page.waitForTimeout(4000);
-    console.log("✅ 下書き保存完了（自動）");
   } else {
-    // 公開ボタン探索（新UI対応）
     const publishBtns = await page.$$(`button, div[role="button"]`);
-    const target = await Promise.any(
-      publishBtns.map(async (b) => {
-        const txt = (await b.innerText()).trim();
-        if (txt.includes("公開") || txt.includes("投稿")) return b;
-        return null;
-      })
-    );
+    let target = null;
+    for (const b of publishBtns) {
+      const txt = (await b.innerText().catch(() => ""))?.trim();
+      if (txt && (txt.includes("公開") || txt.includes("投稿"))) {
+        target = b;
+        break;
+      }
+    }
     if (target) {
       await target.click();
       console.log("✅ 公開投稿完了");
